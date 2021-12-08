@@ -1,0 +1,75 @@
+main:
+  steps:
+    - init:
+        assign:
+          # SET PROJECT AND BQ DATASET
+          - projectId: <project>
+          - dataset: <dataset>
+    - loadExportCsv:
+        call: loadCsvToBq
+        args:
+          body:
+            bucket: <export-bucket>
+            prefix: cars_
+            schema: cats_schema.yaml
+            destinationTable: ${projectId + "." + dataset + ".cars"}
+        result: loadExportResult
+    - conditionalSwitch:
+        switch:
+          # if there is no new CSV, we stop the workflow
+          - condition: ${loadExportResult != "Success"}
+            next: end
+        next: updateExport
+    - updateExport:
+        call: loadQueryToBq
+        args:
+          body:
+              query: big_US_cars.sql
+              destinationTable: ${projectId + "." + dataset + ".big_US_cars"}
+              append: True
+        result: queryResult
+loadCsvToBq:
+  params: [body]
+  steps:
+    - init:
+        assign:
+          # SET ZONE AND PROJECT
+          - loadCsvUrl: https://<zone>-<project>.cloudfunctions.net/load_csv
+          - notFoundMessage: "CSV file not found"
+    - runJob:
+        try:
+          call: http.post
+          args:
+            url: ${loadCsvUrl}
+            body: ${body}
+            auth:
+              type: OIDC
+          result: queryResult
+        except:
+          as: e
+          steps:
+            - known_errors:
+                switch:
+                  - condition: ${e.body.description == notFoundMessage}
+                    return: "Not found"
+            - unhandled_exception:
+                raise: ${e}
+    - queryCompleted:
+        return: ${queryResult.body.description}
+loadQueryToBq:
+  params: [body]
+  steps:
+    - init:
+        assign:
+          # SET ZONE AND PROJECT
+          - loadQueryUrl: https://<zone>-<project>.cloudfunctions.net/load_query
+    - runJob:
+        call: http.post
+        args:
+          url: ${loadQueryUrl}
+          body: ${body}
+          auth:
+            type: OIDC
+        result: queryResult
+    - queryCompleted:
+        return: ${queryResult.body.description}
